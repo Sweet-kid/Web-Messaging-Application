@@ -109,12 +109,20 @@ any '/sendMessages' => sub {
     my $self = shift;
     if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
     {
-	$self->render('sendMessages/index');
+	my $username = $self->session('username');
+	if( getAllUsers($self, $username) )
+	{
+	    $self->render('sendMessages/index');
+	}
     }
     else
     {
 	$self->render('/loginPage');
     }
+};
+
+any '/sendSelMessages' => sub {
+    
 };
 
 any '/logout' => sub {
@@ -127,6 +135,16 @@ any '/testdb' => sub {
     my $self = shift;
     $self->render('testdb/index');
 };
+
+sub getAllUsers()
+{
+    my ($self, $username) = @_;
+    my $sth = eval { $dbh->prepare("SELECT id, username FROM users WHERE username!=\"$username\"") } || die $!;
+    $sth->execute;
+    my $array = $sth->fetchall_arrayref;
+    $self->stash(otherUsers => $array);
+    return 1;
+}
 
 sub isLoggedIn()
 {
@@ -147,7 +165,7 @@ sub checkUserPass()
 {
     my ($self, $username, $password, $id) = @_;
     $password = sha256 $password;
-    my $sth = eval { $dbh->prepare("SELECT id, password FROM users WHERE username=\"$username\"") };
+    my $sth = eval { $dbh->prepare("SELECT id, password FROM users WHERE username=\"$username\"") } || die $!;
     $sth->execute;
     my @row = $sth->fetchrow_array;
     # my $i = 0;
@@ -271,8 +289,49 @@ pass
 
 @@ sendMessages/index.html.ep
 <html>
+<head>
+<title>
+Send Messages@
+<%= session 'username' %>
+</title>
+</head>
 <body>
-SendMessages
+<%= include 'header/index' %>
+<form name="sendMessage" method="post" action="<%=url_for('sendSelMessages')->to_abs%>">
+<div style="float:left;">
+Subject :
+<br/>
+<input type="text" name="subject" style="width:50%" />
+<br/>
+Message Text :
+<br/>
+<textarea name="message" rows="20" cols="100">
+</textarea>
+<br/>
+<input type="submit" value="Send" />
+</div>
+<table style="float:right;">
+<th>
+<td colspan="2" >
+<b style="text-align:left;align:left;">
+All users
+</b>
+</td>
+</th>
+<%= my $i; %>
+% foreach my $row(@{$otherUsers}) { 
+    <tr>
+    % foreach my $text (@{$row}) { 
+    % if( ($text =~ /^\d+$/) ) { 
+    <td><input type="checkbox" name="<%= $text %>"/></td>
+    % } else {
+    <td><%= $text %></td>
+    % }
+    % }
+    </tr>
+    % }
+</table>
+</form>
 </body>
 </html>
     
@@ -285,6 +344,11 @@ SendMessages
     </title>
     </head>
     <body>
+    <%= include 'header/index' %>
+    </body>
+</html>
+
+@@ header/index.html.ep
     <nav style="float:right;" >    
     <%= link_to "Send Messages" => 'sendMessages' %>
     &nbsp; | &nbsp;
@@ -296,11 +360,6 @@ SendMessages
     </nav>
     <br/>
     <hr/>
-    
-    </body>
-</html>
-
-
 
 @@ validateScript.js    
 
