@@ -21,9 +21,9 @@ my $insert;
 my $createDummyAccounts = 0;
 while (1) {
   # create insert statement
-  $insert = eval { $dbh->prepare('INSERT INTO users VALUES (?,?,?,?)') };
+  $insert = eval { $dbh->prepare('INSERT INTO users VALUES (?,?,?,?)') } || die $!;
   # break out of loop if statement prepared
-  last if $insert;
+#  last if $insert;
 
   # if statement didn't prepare, assume its because the table doesn't exist
   warn "Creating table 'people'\n";
@@ -46,7 +46,7 @@ FOREIGN KEY(receiverId) REFERENCES users(id));');
 ownerId VARCHAR(30), 
 receiverId VARCHAR(30), 
 subject TEXT,
-message TEXT VARCHAR(256), 
+message TEXT, 
 date DATE, 
 time TIME,
 read BOOLEAN,
@@ -122,7 +122,29 @@ any '/sendMessages' => sub {
 };
 
 any '/sendSelMessages' => sub {
+    my $self = shift;
+    my $subject = $self->param('subject');
+    my $message = $self->param('message');
+    my $insert1 = eval { $self->$dbh->prepare('INSERT INTO inbox VALUES (?,?,?,?,?,?)') } || die $!;
+    my $insert2 = eval { $self->$dbh->prepare('INSERT INTO sentMessages VALUES (?,?,?,?,?,?)') } || die $!;
     
+    my $i = 0;
+    foreach( $self->param )
+    {
+	if( $self->param($_) =~ /^\d+$/ )
+	{
+	    $insert->execute($self->session(id), $self->param($_), $subject, $message 
+	}
+	$self->session("text".$i => ($self->param($_)));
+	$i++;
+    }
+    
+    $self->redirect_to('/testSendSel');
+};
+
+any '/testSendSel' => sub {
+    my $self = shift;
+    $self->render('testSendSel/index');
 };
 
 any '/logout' => sub {
@@ -220,6 +242,13 @@ app->start;
 
 __DATA__
 
+@@ testSendSel/index.html.ep
+<html>
+<body>
+<%= session 'text1' %>
+</body>
+</html>
+
 @@ testdb/index.html.ep
 <html>
 <body>
@@ -294,16 +323,21 @@ pass
 Send Messages@
 <%= session 'username' %>
 </title>
+<script type="text/javascript" src="validateScript.js" >
+</script>
 </head>
 <body>
 <%= include 'header/index' %>
-<form name="sendMessage" method="post" action="<%=url_for('sendSelMessages')->to_abs%>">
+<form name="sendMessage" method="post" action="<%=url_for('sendSelMessages')->to_abs%>" onsubmit="return validateSendMsg()">
 <div style="float:left;">
 Subject :
 <br/>
 <input type="text" name="subject" style="width:50%" />
 <br/>
+<br/>
+<label id="msgErr">
 Message Text :
+</label>
 <br/>
 <textarea name="message" rows="20" cols="100">
 </textarea>
@@ -323,7 +357,7 @@ All users
     <tr>
     % foreach my $text (@{$row}) { 
     % if( ($text =~ /^\d+$/) ) { 
-    <td><input type="checkbox" name="<%= $text %>"/></td>
+    <td><input type="checkbox" name="selected" value="<%= $text %>"/></td>
     % } else {
     <td><%= $text %></td>
     % }
@@ -352,9 +386,11 @@ All users
     <nav style="float:right;" >    
     <%= link_to "Send Messages" => 'sendMessages' %>
     &nbsp; | &nbsp;
-    <%= link_to "Account Settings" => 'sendMessages' %>
-    &nbsp; | &nbsp;
     <%= link_to "Inbox" => 'inbox' %>
+    &nbsp; | &nbsp;
+    <%= link_to "Sent Messages" => 'sentMessages' %>
+    &nbsp; | &nbsp;
+    <%= link_to "Account Settings" => 'sendMessages' %>
     &nbsp; | &nbsp;
     <%= link_to Logout => 'logout' %>
     </nav>
@@ -399,4 +435,60 @@ function validateForm()
   return blank;
 }
 
+function validateSendMsg()
+{
+    var form = document.forms["sendMessage"];
+    var message = document.forms["sendMessage"]["message"].value;
+    var all = document.forms["sendMessage"].elements;
+    var size = all.length;
+    var selected = false;
+    var msgErr = document.getElementById('msgErr');
+    
+    for(var i = 0; i < form.selected.length; i++) 
+    {
+	if (form.selected[i].checked) 
+	{
+	    selected = true;
+	    break;
+	}
+    }
+    
+    if( !selected )
+    {
+	msgErr.innerHTML = "Message Text :<br/>No recepients selected";
+	return false;
+    }
+    else
+    {
+	msgErr.innerHTML = "Message Text :";
+    }
 
+    var re = "/\s+/gm";
+    var newstr = message.replace(re, "");
+    if( newstr == "" || newstr == null )
+    {
+	msgErr.innerHTML = "Message Text :<br/>Please enter text for your message"    
+	    return false;
+    }
+    else
+    {
+	msgErr.innerHTML = "Message Text :";
+	return true;
+    }
+}
+
+function isAnInt(element) 
+{
+    return (parseInt(element) === element);
+}
+
+function sh(form) 
+{
+    for (var i = 0; i < form.sizes.length; i++) 
+    {
+	if (form.sizes[i].checked) {
+	    break;
+	}
+    }
+    alert(form.sizes[i].value);
+} 
