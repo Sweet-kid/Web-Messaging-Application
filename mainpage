@@ -1,0 +1,192 @@
+#!/usr/bin/env perl
+
+package grabhalo;
+
+use strict;
+use warnings;
+
+use Mojolicious::Lite;
+use DBI;
+
+app->sessions->default_expiration(86400);
+app->secret('MySecretKey');
+
+my $dbh = DBI->connect("dbi:SQLite:database.db","","") or die "Could not connect";
+
+# shortcut for use in template
+helper db => sub { $dbh }; 
+
+my $salt = "hjhjwhjhwj";
+my $insert;
+while (1) {
+  # create insert statement
+  $insert = eval { $dbh->prepare('INSERT INTO users VALUES (?,?,?,?)') };
+  # break out of loop if statement prepared
+  last if $insert;
+
+  # if statement didn't prepare, assume its because the table doesn't exist
+  warn "Creating table 'people'\n";
+  $dbh->do('CREATE TABLE users (id int primary key, username varchar(30), password varchar(256), loggedin boolean);');
+  $dbh->do('CREATE TABLE messages(sender varchar(256), receiver varchar(256), date date, time time');
+}
+
+any '/' => sub
+{
+    my $self = shift;
+    $self->stash(error => "");
+    if( !isLoggedIn($self) )
+    {
+ 	$self->render('login/index');
+    }
+};
+
+any '/login' => sub {
+    my $self = shift;
+    if( !isLoggedIn($self) )
+    {
+	my $username = $self->param('username');
+	my $password = $self->param('password');
+	if( ($username eq "hello") && ($password eq "hello") )
+	{
+	    $self->session(username => $username);
+	    $self->session(loggedIn => "true");
+	    $self->redirect_to('account');
+	}
+	else
+	{
+	    $self->stash(error => 'Invalid username/password');
+	    $self->render('login/index', error => 'Invalid username/password');
+	}
+    }
+};
+
+any '/account' => sub {
+    my $self = shift;
+    if( !isLoggedIn($self) )
+    {
+	$self->redirect_to('login');
+    }
+};
+
+sub isLoggedIn()
+{
+    my $self = $_[0];
+    if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
+    {
+	$self->render('account/index');
+	return 1;
+    }
+    else
+    {
+	return 0;
+    }
+}
+
+app->start;
+
+__DATA__
+
+@@ login/index.html.ep
+<!doctype html>
+<html>
+    <head>
+    <script type="text/javascript" src="validateScript.js">
+    </script>
+    <title>
+    Login page
+    </title>
+    </head>
+    <body>
+    <form name="login" method="post" onsubmit="return validateForm()" action="<%=url_for('login')->to_abs%>">
+    <table>
+    <tr>
+    <td>
+    Username
+    </td>
+    <td>
+    <input type="text" name="username" maxlength="30"/>
+    </td>
+    <td id="usernameErr" style="text-color:red;">
+    </td>
+    </tr>
+    <tr>
+    <td>
+    Password
+    </td>
+    <td>
+    <input type="password" name="password" maxlength="30"/>
+    </td>
+    <td id="passErr" style="text-color:red;">
+    </td>
+    </tr>
+    <tr>
+    <td>
+    <input type="submit" />    
+    </td>
+    </tr>
+    </table>
+    </form>
+    <br/>
+    <%= $error %> 
+    </body>
+</html>
+    
+@@ account/index.html.ep
+<!doctype html>
+<html>
+    <head>
+    <title>
+    Login page
+    </title>
+    </head>
+    <body>
+    <nav style="float:right;" >    
+    <a href="">
+    &nbsp; Send Messages |
+    </a>
+    <a>
+    &nbsp; Account Settings |
+    </a>
+    <a>
+    &nbsp; Inbox |
+    </a>
+    <a>
+    &nbsp;Logout &nbsp;
+    </a>
+    </nav>
+    <br/>
+    <hr/>
+    
+    </body>
+</html>
+
+@@ validateScript.js    
+
+function validateForm()
+{
+  alert("validateForm.");
+  var username = document.forms["login"]["username"].value;
+  var password = document.forms["login"]["password"].value;
+  
+  alert("username = " + username);
+  alert("password = " + password);
+  if( username == null || username == "")
+  {
+      alert("username = " + username);
+      var userErr = document.getElementById('usernameErr');
+      userErr.innerHTML = "Please enter the username";
+      return false;
+  }
+
+  if( password == null || password == "")
+  {
+      alert("password = " + password);
+      var passErr = document.getElementById('passErr');
+      passErr.innerHTML = "Please enter the password";
+      return false;
+  }
+
+  return true;
+}
+
+
