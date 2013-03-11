@@ -7,6 +7,7 @@ use warnings;
 
 use Mojolicious::Lite;
 use DBI;
+use Digest::SHA qw(sha256);
 
 app->sessions->default_expiration(86400);
 app->secret('MySecretKey');
@@ -16,8 +17,8 @@ my $dbh = DBI->connect("dbi:SQLite:database.db","","") or die "Could not connect
 # shortcut for use in template
 helper db => sub { $dbh }; 
 
-my $salt = "hjhjwhjhwj";
 my $insert;
+my $createDummyAccounts = 0;
 while (1) {
   # create insert statement
   $insert = eval { $dbh->prepare('INSERT INTO users VALUES (?,?,?,?)') };
@@ -26,8 +27,40 @@ while (1) {
 
   # if statement didn't prepare, assume its because the table doesn't exist
   warn "Creating table 'people'\n";
-  $dbh->do('CREATE TABLE users (id int primary key, username varchar(30), password varchar(256), loggedin boolean);');
-  $dbh->do('CREATE TABLE messages(sender varchar(256), receiver varchar(256), date date, time time');
+  $createDummyAccounts = 1;
+  $dbh->do('CREATE TABLE users(
+id INT PRIMARY KEY, 
+username VARCHAR(30), 
+password VARCHAR(256), 
+loggedin BOOLEAN);');
+  $dbh->do('CREATE TABLE sentMessages(
+senderId VARCHAR(30), 
+receiverId VARCHAR(30), 
+subject TEXT,
+message TEXT VARCHAR(256), 
+date DATE, 
+time TIME,
+FOREIGN KEY(senderId) REFERENCES users(id),
+FOREIGN KEY(receiverId) REFERENCES users(id));');
+  $dbh->do('CREATE TABLE inbox(
+ownerId VARCHAR(30), 
+receiverId VARCHAR(30), 
+subject TEXT,
+message TEXT VARCHAR(256), 
+date DATE, 
+time TIME,
+read BOOLEAN,
+FOREIGN KEY(ownerId) REFERENCES users(id),
+FOREIGN KEY(receiverId) REFERENCES users(id));');
+}
+
+my $username="username";
+if( $createDummyAccounts )
+{
+    for( my $id = 0; $id < 10; $id++ )
+    {
+	$insert->execute($id, $username.$id, sha256($username.$id), "false");
+    }
 }
 
 any '/' => sub
@@ -36,7 +69,7 @@ any '/' => sub
     $self->stash(error => "");
     if( !isLoggedIn($self) )
     {
- 	$self->render('login/index');
+ 	$self->redirect_to('/loginPage');
     }
 };
 
@@ -46,7 +79,9 @@ any '/login' => sub {
     {
 	my $username = $self->param('username');
 	my $password = $self->param('password');
-	if( ($username eq "hello") && ($password eq "hello") )
+	my $id;
+#	checkUserPass($self, $username, $password, \$id);
+	if( checkUserPass($self, $username, $password) )
 	{
 	    $self->session(username => $username);
 	    $self->session(loggedIn => "true");
@@ -54,18 +89,43 @@ any '/login' => sub {
 	}
 	else
 	{
-	    $self->stash(error => 'Invalid username/password');
-	    $self->render('login/index', error => 'Invalid username/password');
+	    $self->flash(error => 'Invalid username/password');
+	    $self->redirect_to('/loginPage');
 	}
     }
 };
+
+any '/loginPage' => 'login/index';
 
 any '/account' => sub {
     my $self = shift;
     if( !isLoggedIn($self) )
     {
-	$self->redirect_to('login');
+	$self->redirect_to('/loginPage');
     }
+};
+
+any '/sendMessages' => sub {
+    my $self = shift;
+    if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
+    {
+	$self->render('sendMessages/index');
+    }
+    else
+    {
+	$self->render('/loginPage');
+    }
+};
+
+any '/logout' => sub {
+    my $self = shift;
+    $self->session(loggedIn => 'false');
+    $self->redirect_to('/loginPage');
+};
+
+any '/testdb' => sub {
+    my $self = shift;
+    $self->render('testdb/index');
 };
 
 sub isLoggedIn()
@@ -73,6 +133,7 @@ sub isLoggedIn()
     my $self = $_[0];
     if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
     {
+#	$self->redirect_to('account');
 	$self->render('account/index');
 	return 1;
     }
@@ -82,9 +143,81 @@ sub isLoggedIn()
     }
 }
 
+sub checkUserPass()
+{
+    my ($self, $username, $password, $id) = @_;
+    $password = sha256 $password;
+    my $sth = eval { $dbh->prepare("SELECT id, password FROM users WHERE username=\"$username\"") };
+    $sth->execute;
+    my @row = $sth->fetchrow_array;
+    # my $i = 0;
+    # foreach my $val (@rows) 
+    # {
+    # 	$self->session("value".$i => $val);
+    # 	$i++;
+    # }
+
+    # $self->session(foo => 'bar');
+    # $self->session(pass => $password );
+
+    # if( $password eq $self->session('value1') )
+    # {
+    # 	$self->session(equal => "true");
+    # }
+    # else
+    # {
+    # 	$self->session(equal => "false");	
+    # }
+
+    $id = $row[0];
+    my $retrievedPass = $row[1];
+    # $self->session(id => $id);
+    # $self->session(pass => $retrievedPass);
+    if( ($id ne "") && ($retrievedPass ne "") && ($retrievedPass eq $password) )
+    {
+	$self->session(id => $id);
+	$self->session(username => $username);
+	return 1;
+#	$self->session(if1 => "true");	
+    }
+#     if( $retrievedPass ne "" )
+#     {
+# 	$self->session(if2 => "true");		
+#     }
+#     if($retrievedPass eq $password) 
+#     {
+# 	$self->session(id => $id);
+# 	# $self->s(password => $retrievedPass);
+# #	$self->redirect_to('/testdb');
+# 	return 1;
+#     }
+    else
+    {
+	return 0;
+    }
+#    $self->redirect_to('/testdb');
+};
+
 app->start;
 
 __DATA__
+
+@@ testdb/index.html.ep
+<html>
+<body>
+id
+<%= session 'if1' %>
+<br/>
+<%= session 'if2' %>
+<br/>
+pass
+<%= session 'id' %>
+<br/>
+<%= session 'pass' %>
+<br/>
+<%= session 'equal' %>
+</body>
+</html>
 
 @@ login/index.html.ep
 <!doctype html>
@@ -121,14 +254,26 @@ __DATA__
     </tr>
     <tr>
     <td>
-    <input type="submit" />    
+    <input type="submit" value="Login" />    
+    </td>
+    <td>
+    <input type="reset" value="Reset" />
     </td>
     </tr>
     </table>
     </form>
     <br/>
-    <%= $error %> 
+    <label id="flashError" style="text-color:red">
+    <%= flash 'error' %> 
+    </label>
     </body>
+</html>
+
+@@ sendMessages/index.html.ep
+<html>
+<body>
+SendMessages
+</body>
 </html>
     
 @@ account/index.html.ep
@@ -136,29 +281,26 @@ __DATA__
 <html>
     <head>
     <title>
-    Login page
+    <%= session 'username' %>
     </title>
     </head>
     <body>
     <nav style="float:right;" >    
-    <a href="">
-    &nbsp; Send Messages |
-    </a>
-    <a>
-    &nbsp; Account Settings |
-    </a>
-    <a>
-    &nbsp; Inbox |
-    </a>
-    <a>
-    &nbsp;Logout &nbsp;
-    </a>
+    <%= link_to "Send Messages" => 'sendMessages' %>
+    &nbsp; | &nbsp;
+    <%= link_to "Account Settings" => 'sendMessages' %>
+    &nbsp; | &nbsp;
+    <%= link_to "Inbox" => 'inbox' %>
+    &nbsp; | &nbsp;
+    <%= link_to Logout => 'logout' %>
     </nav>
     <br/>
     <hr/>
     
     </body>
 </html>
+
+
 
 @@ validateScript.js    
 
@@ -167,26 +309,35 @@ function validateForm()
   alert("validateForm.");
   var username = document.forms["login"]["username"].value;
   var password = document.forms["login"]["password"].value;
+  var blank = true;
+  var userErr = document.getElementById('usernameErr');
+  var passErr = document.getElementById('passErr');
+  var flashErr = document.getElementById('flashError');
+  flashErr.innerHTML = "";
   
-  alert("username = " + username);
-  alert("password = " + password);
   if( username == null || username == "")
   {
       alert("username = " + username);
-      var userErr = document.getElementById('usernameErr');
       userErr.innerHTML = "Please enter the username";
-      return false;
+      blank = false;
+  }
+  else
+  {
+      userErr.innerHTML = "";      
   }
 
   if( password == null || password == "")
   {
       alert("password = " + password);
-      var passErr = document.getElementById('passErr');
       passErr.innerHTML = "Please enter the password";
-      return false;
+      blank = false;
+  }
+  else
+  {
+      passErr.innerHTML = "";      
   }
 
-  return true;
+  return blank;
 }
 
 
