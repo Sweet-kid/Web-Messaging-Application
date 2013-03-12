@@ -21,45 +21,37 @@ my $insert;
 my $createDummyAccounts = 0;
 while (1) {
   # create insert statement
-  $insert = eval { $dbh->prepare('INSERT INTO users VALUES (?,?,?,?)') } || die $!;
+    $insert = eval { $dbh->prepare('INSERT INTO users(username,password,loggedin) VALUES (?,?,?)') };
   # break out of loop if statement prepared
-#  last if $insert;
+    last if $insert;
 
   # if statement didn't prepare, assume its because the table doesn't exist
-  warn "Creating table 'people'\n";
-  $createDummyAccounts = 1;
-  $dbh->do('CREATE TABLE users(
-id INT PRIMARY KEY, 
+    warn "Creating tables\n";
+    $createDummyAccounts = 1;
+    $dbh->do('CREATE TABLE users(
+rowid INTEGER PRIMARY KEY, 
 username VARCHAR(30), 
 password VARCHAR(256), 
 loggedin BOOLEAN);');
-  $dbh->do('CREATE TABLE sentMessages(
-senderId VARCHAR(30), 
-receiverId VARCHAR(30), 
-subject TEXT,
-message TEXT VARCHAR(256), 
-date DATE, 
-time TIME,
-FOREIGN KEY(senderId) REFERENCES users(id),
-FOREIGN KEY(receiverId) REFERENCES users(id));');
-  $dbh->do('CREATE TABLE inbox(
-ownerId VARCHAR(30), 
-receiverId VARCHAR(30), 
+    $dbh->do('CREATE TABLE messages(
+rowid INTEGER PRIMARY KEY,
+senderId VARCHAR(30),
+receiverId VARCHAR(30),
 subject TEXT,
 message TEXT, 
 date DATE, 
 time TIME,
 read BOOLEAN,
-FOREIGN KEY(ownerId) REFERENCES users(id),
+FOREIGN KEY(senderId) REFERENCES users(id),
 FOREIGN KEY(receiverId) REFERENCES users(id));');
 }
 
 my $username="username";
 if( $createDummyAccounts )
 {
-    for( my $id = 0; $id < 10; $id++ )
+    for( my $id = 1; $id <= 10; $id++ )
     {
-	$insert->execute($id, $username.$id, sha256($username.$id), "false");
+	$insert->execute($username.$id, sha256($username.$id), "false") ;
     }
 }
 
@@ -85,7 +77,7 @@ any '/login' => sub {
 	{
 	    $self->session(username => $username);
 	    $self->session(loggedIn => "true");
-	    $self->redirect_to('account');
+	    $self->redirect_to('/inbox');
 	}
 	else
 	{
@@ -93,15 +85,23 @@ any '/login' => sub {
 	    $self->redirect_to('/loginPage');
 	}
     }
+    else
+    {
+	$self->redirect_to('/inbox');
+    }
 };
 
 any '/loginPage' => 'login/index';
 
-any '/account' => sub {
+any '/inbox' => sub {
     my $self = shift;
     if( !isLoggedIn($self) )
     {
 	$self->redirect_to('/loginPage');
+    }
+    else
+    {
+	$self->render('inbox/index');
     }
 };
 
@@ -117,29 +117,39 @@ any '/sendMessages' => sub {
     }
     else
     {
-	$self->render('/loginPage');
+	$self->redirect_to('/loginPage');
     }
 };
 
 any '/sendSelMessages' => sub {
     my $self = shift;
-    my $subject = $self->param('subject');
-    my $message = $self->param('message');
-    my $insert1 = eval { $self->$dbh->prepare('INSERT INTO inbox VALUES (?,?,?,?,?,?)') } || die $!;
-    my $insert2 = eval { $self->$dbh->prepare('INSERT INTO sentMessages VALUES (?,?,?,?,?,?)') } || die $!;
-    
-    my $i = 0;
-    foreach( $self->param )
+    if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
     {
-	if( $self->param($_) =~ /^\d+$/ )
-	{
-	    $insert->execute($self->session(id), $self->param($_), $subject, $message 
-	}
-	$self->session("text".$i => ($self->param($_)));
-	$i++;
-    }
+	my $subject = $self->param('subject');
+	my $message = $self->param('message');
+	# my $selected1 = $self->param('selected');
+	# my $selected2 = $self->param('selected');
+	# $self->session(selected1 => $selected1);
+	# $self->session(selected2 => $selected2);
+	my $insert2 = eval { $dbh->prepare('INSERT INTO messages(senderId, receiverId, subject, message, date, time, read) VALUES (?,?,?,?,?,?,?)') } || print $!;
     
-    $self->redirect_to('/testSendSel');
+	my $date = getDate();
+	my $time = getTime();
+
+	foreach( $self->param )
+	{
+	    if( $_ =~ /^selected\d+$/ )
+	    { 
+		$insert2->execute($self->session("rowid"), $self->param($_), $subject, $message, $date, $time, "false");
+	    }
+	}
+    
+	$self->redirect_to('/inbox');
+    }
+    else
+    {
+	$self->redirect_to('/loginPage');
+    }
 };
 
 any '/testSendSel' => sub {
@@ -149,8 +159,14 @@ any '/testSendSel' => sub {
 
 any '/logout' => sub {
     my $self = shift;
-    $self->session(loggedIn => 'false');
+    $self->session("loggedIn");
+    $self->session("rowid");
     $self->redirect_to('/loginPage');
+};
+
+any '/inbox' => sub {
+    my $self = shift;
+    
 };
 
 any '/testdb' => sub {
@@ -158,10 +174,38 @@ any '/testdb' => sub {
     $self->render('testdb/index');
 };
 
+sub getDate() {
+    my @months = (
+	"Jan",
+	"Feb",
+	"Mar",
+	"Apr",
+	"May",
+	"Jun",
+	"Jul",
+	"Aug",
+	"Sep",
+	"Oct",
+	"Nov",
+	"Dec"
+	);
+    my @allArgs = localtime;
+    my $year = $allArgs[5] + 1900;
+    my $date = "$months[$allArgs[4]] $allArgs[3], $year"; 
+    return $date;
+};
+
+sub getTime() {
+    my @allArgs = localtime;
+    my $year = $allArgs[5] + 1900;
+    my $date = "$allArgs[2]:$allArgs[1]:$allArgs[0]"; 
+    return $date;
+};
+
 sub getAllUsers()
 {
     my ($self, $username) = @_;
-    my $sth = eval { $dbh->prepare("SELECT id, username FROM users WHERE username!=\"$username\"") } || die $!;
+    my $sth = eval { $dbh->prepare("SELECT rowid, username FROM users WHERE username!=\"$username\"") } ;
     $sth->execute;
     my $array = $sth->fetchall_arrayref;
     $self->stash(otherUsers => $array);
@@ -173,8 +217,6 @@ sub isLoggedIn()
     my $self = $_[0];
     if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
     {
-#	$self->redirect_to('account');
-	$self->render('account/index');
 	return 1;
     }
     else
@@ -185,9 +227,9 @@ sub isLoggedIn()
 
 sub checkUserPass()
 {
-    my ($self, $username, $password, $id) = @_;
+    my ($self, $username, $password, $rowid) = @_;
     $password = sha256 $password;
-    my $sth = eval { $dbh->prepare("SELECT id, password FROM users WHERE username=\"$username\"") } || die $!;
+    my $sth = eval { $dbh->prepare("SELECT rowid, password FROM users WHERE username=\"$username\"") } ;
     $sth->execute;
     my @row = $sth->fetchrow_array;
     # my $i = 0;
@@ -209,13 +251,13 @@ sub checkUserPass()
     # 	$self->session(equal => "false");	
     # }
 
-    $id = $row[0];
+    $rowid = $row[0];
     my $retrievedPass = $row[1];
-    # $self->session(id => $id);
+    # $self->session(rowid => $rowid);
     # $self->session(pass => $retrievedPass);
-    if( ($id ne "") && ($retrievedPass ne "") && ($retrievedPass eq $password) )
+    if( ($rowid ne "") && ($retrievedPass ne "") && ($retrievedPass eq $password) )
     {
-	$self->session(id => $id);
+	$self->session(rowid => $rowid);
 	$self->session(username => $username);
 	return 1;
 #	$self->session(if1 => "true");	
@@ -245,7 +287,9 @@ __DATA__
 @@ testSendSel/index.html.ep
 <html>
 <body>
-<%= session 'text1' %>
+<%= session 'selected1' %>
+<br/>
+<%= session 'selected2' %>
 </body>
 </html>
 
@@ -258,7 +302,7 @@ id
 <%= session 'if2' %>
 <br/>
 pass
-<%= session 'id' %>
+<%= session 'rowid' %>
 <br/>
 <%= session 'pass' %>
 <br/>
@@ -328,7 +372,7 @@ Send Messages@
 </head>
 <body>
 <%= include 'header/index' %>
-<form name="sendMessage" method="post" action="<%=url_for('sendSelMessages')->to_abs%>" onsubmit="return validateSendMsg()">
+<form name="sendMessage" method="post" action="<%=url_for('sendSelMessages')->to_abs%>" onsubmit="return validateSendMsg(<%= session 'rowid' %>)">
 <div style="float:left;">
 Subject :
 <br/>
@@ -357,7 +401,7 @@ All users
     <tr>
     % foreach my $text (@{$row}) { 
     % if( ($text =~ /^\d+$/) ) { 
-    <td><input type="checkbox" name="selected" value="<%= $text %>"/></td>
+    <td><input type="checkbox" name="selected<%= $text %>" value="<%= $text %>" /></td>
     % } else {
     <td><%= $text %></td>
     % }
@@ -369,7 +413,7 @@ All users
 </body>
 </html>
     
-@@ account/index.html.ep
+@@ inbox/index.html.ep
 <!doctype html>
 <html>
     <head>
@@ -384,9 +428,9 @@ All users
 
 @@ header/index.html.ep
     <nav style="float:right;" >    
-    <%= link_to "Send Messages" => 'sendMessages' %>
-    &nbsp; | &nbsp;
     <%= link_to "Inbox" => 'inbox' %>
+    &nbsp; | &nbsp;
+    <%= link_to "Send Messages" => 'sendMessages' %>
     &nbsp; | &nbsp;
     <%= link_to "Sent Messages" => 'sentMessages' %>
     &nbsp; | &nbsp;
@@ -435,24 +479,42 @@ function validateForm()
   return blank;
 }
 
-function validateSendMsg()
+function validateSendMsg(id)
 {
+    alert("validateSendMsg");
     var form = document.forms["sendMessage"];
     var message = document.forms["sendMessage"]["message"].value;
     var all = document.forms["sendMessage"].elements;
     var size = all.length;
     var selected = false;
     var msgErr = document.getElementById('msgErr');
-    
-    for(var i = 0; i < form.selected.length; i++) 
+
+    alert(form.elements["selected0"].checked);
+
+    for( var i = 0; i < size; i++ )
     {
-	if (form.selected[i].checked) 
+	if( i != id )
 	{
-	    selected = true;
-	    break;
+	    try
+	    {
+		var checkbox = form.elements['selected' + i];
+		if( checkbox != null || checkbox != "" )
+		{
+		    if( checkbox.checked == true )
+		    {
+			alert(checkbox.value);
+			selected = true;
+			break;
+		    }
+		}
+	    }
+	    catch(e)
+	    {
+		continue;
+	    }
 	}
     }
-    
+
     if( !selected )
     {
 	msgErr.innerHTML = "Message Text :<br/>No recepients selected";
@@ -467,8 +529,8 @@ function validateSendMsg()
     var newstr = message.replace(re, "");
     if( newstr == "" || newstr == null )
     {
-	msgErr.innerHTML = "Message Text :<br/>Please enter text for your message"    
-	    return false;
+	msgErr.innerHTML = "Message Text :<br/>Please enter text for your message";
+	return false;
     }
     else
     {
