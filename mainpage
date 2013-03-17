@@ -1,7 +1,5 @@
 #!/usr/bin/env perl
 
-package grabhalo;
-
 use strict;
 use warnings;
 
@@ -14,18 +12,109 @@ app->secret('MySecretKey');
 
 my $dbh = DBI->connect("dbi:SQLite:database.db","","") or die "Could not connect";
 
-# shortcut for use in template
 helper db => sub { $dbh }; 
+
+helper insertUsers => sub 
+{
+    my $self = shift;
+    my $username = "username";
+    my $insert = eval { $dbh->prepare('INSERT INTO users(username,password,loggedin) VALUES (?,?,?)') } || return 0;
+    for( my $id = 1; $id <= 10; $id++ )
+    {
+	$insert->execute($username.$id, sha256($username.$id), "false") ;
+    }
+    
+    return 1;
+};
+
+helper checkUserPass => sub
+{
+    my ($self, $username, $password) = @_;
+    
+    $password = sha256 $password;
+    my $sth = eval { $dbh->prepare("SELECT rowid, password FROM users WHERE username=\"$username\"") } ;
+    $sth->execute;
+    my @row = $sth->fetchrow_array;
+
+    my $rowid = $row[0];
+    my $retrievedPass = $row[1];
+    if( ($rowid ne "") && ($retrievedPass ne "") && ($retrievedPass eq $password) )
+    {
+	$self->session(rowid => $rowid);
+	$self->session(username => $username);
+	return 1;
+    }
+    else
+    {
+	return 0;
+    }
+};
+
+helper getAllReplies => sub {
+    my $self = shift;
+    my $id = $self->session("rowid");
+    my $sth = eval { $dbh->prepare("SELECT inbox.rowid, username, subject, date, time, read, message FROM inbox, users WHERE receiverId=='$id' and users.rowid==senderId;")} || return 0;
+    $sth->execute;
+    my $inboxData = $sth->fetchall_arrayref;
+    $sth = eval { $dbh->prepare("SELECT count(rowid) FROM inbox WHERE receiverId=='$id';")} || return 0;
+    $sth->execute;
+    my @array = $sth->fetchrow_array();
+    my $number = $array[0];
+    $self->stash(inboxData => $inboxData);
+    $self->stash(number => $number);
+    $self->stash(visibility => "0" );
+    return 1;
+};
+
+helper getNoOfUnReadMessages => sub {
+    my $self = shift;
+    my $id = $self->session('id');
+    my $sth = eval { $dbh->prepare("SELECT count(rowid) FROM inbox WHERE receiverId=='$id' and read='false' ;")} || return 0;
+    $sth->execute;
+    my @array = $sth->fetchrow_array();
+    my $unread = $array[0];
+    $self->stash(unread => $unread);    
+    return $unread;    
+};
+
+helper getSentMessages => sub {
+    my $self = shift;
+    my $id = $self->session("rowid");
+    my $sth = eval { $dbh->prepare("SELECT sentMessages.rowid, username, subject, date, time, message FROM sentMessages, users WHERE senderId=='$id' and users.rowid==receiverId;")} || return 0;
+    $sth->execute;
+    my $sentData = $sth->fetchall_arrayref;    
+    $sth = eval { $dbh->prepare("SELECT count(rowid) FROM sentMessages WHERE senderId=='$id';")} || return 0;
+    $sth->execute;
+    my @array = $sth->fetchrow_array();
+    my $number = $array[0];
+    $self->stash(sentData => $sentData);
+    $self->stash(noOfSentMessages => $number);
+    return 1;
+};
+
+helper getAllUsers => sub {
+    my ($self, $rowid) = @_;
+    my $sth = eval { $dbh->prepare("SELECT rowid, username FROM users WHERE rowid!=\"$rowid\"") } || return 0;
+    $sth->execute;
+    my $array = $sth->fetchall_arrayref;
+    $self->stash(otherUsers => $array);
+    return 1;
+};
+
+helper markread => sub {
+    my ($self, $id) = @_;
+    print "\nid = $id\n";
+    my $sth = eval { $dbh->prepare("UPDATE inbox SET read='true' WHERE rowid='$id';") } || return 0;
+    $sth->execute;
+    return 1;
+};
 
 my $insert;
 my $createDummyAccounts = 0;
 while (1) {
-  # create insert statement
     $insert = eval { $dbh->prepare('INSERT INTO users(username,password,loggedin) VALUES (?,?,?)') };
-  # break out of loop if statement prepared
     last if $insert;
 
-  # if statement didn't prepare, assume its because the table doesn't exist
     warn "Creating tables\n";
     $createDummyAccounts = 1;
     $dbh->do('CREATE TABLE users(
@@ -33,7 +122,7 @@ rowid INTEGER PRIMARY KEY,
 username VARCHAR(30), 
 password VARCHAR(256), 
 loggedin BOOLEAN);');
-    $dbh->do('CREATE TABLE messages(
+    $dbh->do('CREATE TABLE inbox(
 rowid INTEGER PRIMARY KEY,
 senderId VARCHAR(30),
 receiverId VARCHAR(30),
@@ -44,22 +133,33 @@ time TIME,
 read BOOLEAN,
 FOREIGN KEY(senderId) REFERENCES users(id),
 FOREIGN KEY(receiverId) REFERENCES users(id));');
+    $dbh->do('CREATE TABLE sentMessages(
+rowid INTEGER PRIMARY KEY,
+senderId VARCHAR(30),
+receiverId VARCHAR(30),
+subject TEXT,
+message TEXT, 
+date DATE, 
+time TIME,
+FOREIGN KEY(senderId) REFERENCES users(id),
+FOREIGN KEY(receiverId) REFERENCES users(id));');
 }
 
 my $username="username";
 if( $createDummyAccounts )
 {
-    for( my $id = 1; $id <= 10; $id++ )
-    {
-	$insert->execute($username.$id, sha256($username.$id), "false") ;
-    }
+    app->insertUsers;
 }
 
 any '/' => sub
 {
     my $self = shift;
     $self->stash(error => "");
-    if( !isLoggedIn($self) )
+    if( isLoggedIn($self) )
+    {
+	$self->render('inbox/index');
+    }
+    else
     {
  	$self->redirect_to('/loginPage');
     }
@@ -67,13 +167,16 @@ any '/' => sub
 
 any '/login' => sub {
     my $self = shift;
-    if( !isLoggedIn($self) )
+    if( isLoggedIn($self) )
+    {
+	$self->redirect_to('/inbox');
+    }
+    else
     {
 	my $username = $self->param('username');
 	my $password = $self->param('password');
 	my $id;
-#	checkUserPass($self, $username, $password, \$id);
-	if( checkUserPass($self, $username, $password) )
+	if( $self->checkUserPass($username, $password) )
 	{
 	    $self->session(username => $username);
 	    $self->session(loggedIn => "true");
@@ -85,32 +188,53 @@ any '/login' => sub {
 	    $self->redirect_to('/loginPage');
 	}
     }
-    else
+};
+
+any '/loginPage' => sub {
+    my $self = shift;
+    if( isLoggedIn($self) )
     {
 	$self->redirect_to('/inbox');
     }
+    else
+    {
+	$self->render('login/index');
+    }
 };
-
-any '/loginPage' => 'login/index';
 
 any '/inbox' => sub {
     my $self = shift;
-    if( !isLoggedIn($self) )
+    if( isLoggedIn($self) )
     {
-	$self->redirect_to('/loginPage');
+	my $replies = $self->getAllReplies;
+	$self->stash(visibility => "0");
+	$self->render('inbox/index' );
     }
     else
     {
-	$self->render('inbox/index');
+	$self->redirect_to('/loginPage');
     }
+};
+
+any '/sentMessages' => sub {
+    my $self = shift;
+    if( isLoggedIn($self) )
+    {
+	my $sentData = $self->getSentMessages;
+	$self->render('sentMessages/index');
+    }
+    else
+    {
+	$self->redirect_to('/loginPage');
+    }    
 };
 
 any '/sendMessages' => sub {
     my $self = shift;
-    if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
+    if( isLoggedIn($self) )
     {
-	my $username = $self->session('username');
-	if( getAllUsers($self, $username) )
+	my $rowid = $self->session('rowid');
+	if( $self->getAllUsers($rowid) )
 	{
 	    $self->render('sendMessages/index');
 	}
@@ -123,25 +247,35 @@ any '/sendMessages' => sub {
 
 any '/sendSelMessages' => sub {
     my $self = shift;
-    if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
+    if( isLoggedIn($self) )
     {
 	my $subject = $self->param('subject');
-	my $message = $self->param('message');
-	# my $selected1 = $self->param('selected');
-	# my $selected2 = $self->param('selected');
-	# $self->session(selected1 => $selected1);
-	# $self->session(selected2 => $selected2);
-	my $insert2 = eval { $dbh->prepare('INSERT INTO messages(senderId, receiverId, subject, message, date, time, read) VALUES (?,?,?,?,?,?,?)') } || print $!;
-    
+	my $origMessage = $self->param('message');
+	my $username = $self->session("username");
+	my $previousText = "$username wrote :\n";
+	my $message = $previousText.$origMessage;
+	my $insert1 = eval { $dbh->prepare('INSERT INTO inbox(senderId, receiverId, subject, message, date, time, read) VALUES (?,?,?,?,?,?,?)') } || die $!;
 	my $date = getDate();
 	my $time = getTime();
 
+	my @params;
+	my $i = 0;
 	foreach( $self->param )
 	{
 	    if( $_ =~ /^selected\d+$/ )
 	    { 
-		$insert2->execute($self->session("rowid"), $self->param($_), $subject, $message, $date, $time, "false");
+		$params[$i++] = $self->param($_);
+		$insert1->execute($self->session("rowid"), $self->param($_), $subject, $message, $date, $time, "false");
 	    }
+	}
+    
+	$previousText = "You wrote :\n";
+	$message = $previousText.$origMessage;
+	my $insert2 = eval { $dbh->prepare('INSERT INTO sentMessages(senderId, receiverId, subject, message, date, time) VALUES (?,?,?,?,?,?)') } || die $!;
+
+	foreach( @params )
+	{
+	    $insert2->execute($self->session("rowid"), $_, $subject, $message, $date, $time);
 	}
     
 	$self->redirect_to('/inbox');
@@ -152,26 +286,69 @@ any '/sendSelMessages' => sub {
     }
 };
 
-any '/testSendSel' => sub {
-    my $self = shift;
-    $self->render('testSendSel/index');
-};
-
 any '/logout' => sub {
     my $self = shift;
-    $self->session("loggedIn");
-    $self->session("rowid");
+    $self->session(expires => 1);
     $self->redirect_to('/loginPage');
 };
 
-any '/inbox' => sub {
+get '/replyForm' => sub 
+{
     my $self = shift;
-    
-};
+    if( isLoggedIn($self) )
+    {
+	foreach( $self->param )
+	{
+	    if( $self->param($_) && $_ =~ /^.*(\d+)$/ )
+	    {
+		my $senderId = $self->session('rowid');
+		my $username = $self->session("username");
+		my $origMessage = $self->param('textMessage'.$1);
+		print "1 => $1\n";
+		print "message => $origMessage\n";
+		print "senderId => $senderId\n";
+		my $id = $self->param('hidden'.$1);
+		my $previousText = "\n$username wrote :\n";
+		my $message = $previousText.$origMessage;
+		my $date = getDate();
+		my $time = getTime();
 
-any '/testdb' => sub {
-    my $self = shift;
-    $self->render('testdb/index');
+		my $select = eval { $dbh->prepare("SELECT senderId, message FROM sentMessages WHERE rowid='$1';") } || die $!;
+		$select->execute;
+		my @array = $select->fetchrow_array;
+		my $receiverId = $array[0];
+		print "array[0] => $array[0]\n";
+		print "array[1] => $array[1]\n";
+		my $newmessage = "$array[1].$message";
+
+		$previousText = "\nYou wrote :\n";
+		$message = $previousText.$origMessage;
+		my $select2 = eval { $dbh->prepare("SELECT senderId, message FROM inbox WHERE rowid='$1';") } || die $!;
+		$select2->execute;
+		my @array2 = $select2->fetchrow_array;
+		my $receiverId2 = $array2[0];
+		print "array2[0] => $array2[0]\n";
+		print "array2[1] => $array2[1]\n";
+		my $newmessage2 = "$array2[1].$message";
+
+		print "newMessage2 => $newmessage2\n";
+
+		my $statement = "UPDATE inbox SET message=?, senderId=?, date=?, time=?, receiverId=? WHERE rowid=?";
+		my $rv  = $dbh->do($statement, undef, $newmessage, $senderId, $date, $time, $receiverId, $1); 
+		$DBI::err && die $DBI::errstr;		
+
+		$statement = "UPDATE sentMessages SET message=?, senderId=?, date=?, time=?, receiverId=? WHERE rowid=?";
+		$rv  = $dbh->do($statement, undef, $newmessage2, $senderId, $date, $time, $receiverId2, $1); 
+		$DBI::err && die $DBI::errstr;		
+		
+		$self->redirect_to('/inbox');
+	    }
+	}
+    }
+    else
+    {
+	$self->redirect_to('/loginPage');
+    }
 };
 
 sub getDate() {
@@ -198,24 +375,48 @@ sub getDate() {
 sub getTime() {
     my @allArgs = localtime;
     my $year = $allArgs[5] + 1900;
-    my $date = "$allArgs[2]:$allArgs[1]:$allArgs[0]"; 
-    return $date;
-};
+    my ($hour, $minute, $second);
 
-sub getAllUsers()
-{
-    my ($self, $username) = @_;
-    my $sth = eval { $dbh->prepare("SELECT rowid, username FROM users WHERE username!=\"$username\"") } ;
-    $sth->execute;
-    my $array = $sth->fetchall_arrayref;
-    $self->stash(otherUsers => $array);
-    return 1;
-}
+    my $zero = "0";
+    if( $allArgs[2] < 10 )
+    {
+	$hour = $zero.$allArgs[2];
+    }
+    else
+    {
+	$hour = $allArgs[2];
+    }
+   
+    if( $allArgs[1] < 10 )
+    {
+	$minute = $zero.$allArgs[1]
+    }
+    else
+    {
+	$minute = $allArgs[1];
+    }
+
+    if( $allArgs[0] < 10 )
+    {
+	$second = $zero.$allArgs[0]
+    }
+    else
+    {
+	$second = $allArgs[0];
+    }
+
+    my $time = "$hour:$minute:$second"; 
+    print "$time\n";
+    return $time;
+};
 
 sub isLoggedIn()
 {
     my $self = $_[0];
-    if( (defined $self->session('loggedIn')) && ($self->session('loggedIn') eq 'true'))
+    if( (defined $self->session('loggedIn')) && 
+	($self->session('loggedIn') eq 'true') &&
+	(defined $self->session('rowid')) &&
+	($self->session('rowid') =~ /^\d+$/))
     {
 	return 1;
     }
@@ -225,90 +426,9 @@ sub isLoggedIn()
     }
 }
 
-sub checkUserPass()
-{
-    my ($self, $username, $password, $rowid) = @_;
-    $password = sha256 $password;
-    my $sth = eval { $dbh->prepare("SELECT rowid, password FROM users WHERE username=\"$username\"") } ;
-    $sth->execute;
-    my @row = $sth->fetchrow_array;
-    # my $i = 0;
-    # foreach my $val (@rows) 
-    # {
-    # 	$self->session("value".$i => $val);
-    # 	$i++;
-    # }
-
-    # $self->session(foo => 'bar');
-    # $self->session(pass => $password );
-
-    # if( $password eq $self->session('value1') )
-    # {
-    # 	$self->session(equal => "true");
-    # }
-    # else
-    # {
-    # 	$self->session(equal => "false");	
-    # }
-
-    $rowid = $row[0];
-    my $retrievedPass = $row[1];
-    # $self->session(rowid => $rowid);
-    # $self->session(pass => $retrievedPass);
-    if( ($rowid ne "") && ($retrievedPass ne "") && ($retrievedPass eq $password) )
-    {
-	$self->session(rowid => $rowid);
-	$self->session(username => $username);
-	return 1;
-#	$self->session(if1 => "true");	
-    }
-#     if( $retrievedPass ne "" )
-#     {
-# 	$self->session(if2 => "true");		
-#     }
-#     if($retrievedPass eq $password) 
-#     {
-# 	$self->session(id => $id);
-# 	# $self->s(password => $retrievedPass);
-# #	$self->redirect_to('/testdb');
-# 	return 1;
-#     }
-    else
-    {
-	return 0;
-    }
-#    $self->redirect_to('/testdb');
-};
-
 app->start;
 
 __DATA__
-
-@@ testSendSel/index.html.ep
-<html>
-<body>
-<%= session 'selected1' %>
-<br/>
-<%= session 'selected2' %>
-</body>
-</html>
-
-@@ testdb/index.html.ep
-<html>
-<body>
-id
-<%= session 'if1' %>
-<br/>
-<%= session 'if2' %>
-<br/>
-pass
-<%= session 'rowid' %>
-<br/>
-<%= session 'pass' %>
-<br/>
-<%= session 'equal' %>
-</body>
-</html>
 
 @@ login/index.html.ep
 <!doctype html>
@@ -316,47 +436,54 @@ pass
     <head>
     <script type="text/javascript" src="validateScript.js">
     </script>
+    <style type="text/css">
+    fieldset.center
+    {
+    margin-left:auto; 
+    margin-right:auto;
+    }    
+    </style>
     <title>
     Login page
     </title>
     </head>
-    <body>
-    <form name="login" method="post" onsubmit="return validateForm()" action="<%=url_for('login')->to_abs%>">
-    <table>
-    <tr>
-    <td>
-    Username
-    </td>
-    <td>
-    <input type="text" name="username" maxlength="30"/>
-    </td>
-    <td id="usernameErr" style="text-color:red;">
-    </td>
-    </tr>
-    <tr>
-    <td>
-    Password
-    </td>
-    <td>
-    <input type="password" name="password" maxlength="30"/>
-    </td>
-    <td id="passErr" style="text-color:red;">
-    </td>
-    </tr>
-    <tr>
-    <td>
-    <input type="submit" value="Login" />    
-    </td>
-    <td>
-    <input type="reset" value="Reset" />
-    </td>
-    </tr>
-    </table>
-    </form>
+    <body style="background-color:black;color:white;">
+    <h1 style="text-align:center;">
+    My Messaging Application
+    </h1>
     <br/>
-    <label id="flashError" style="text-color:red">
+    <br/>
+    <hr/>
+    <br/>
+    <br/>
+    <br/>
+    <br/>
+    <fieldset style="width:20%;floar:right;">
+    <legend><strong>Sign In</strong></legend>
+    <form name="login" method="post" onsubmit="return validateForm()" action="<%=url_for('login')->to_abs%>">
+    <legend>
+    Username
+    </legend>
+    <input type="text" name="username" maxlength="30" style="width:100%;"/>
+    <label id="usernameErr" style="text-color:red;">
+    </label>
+    <legend>
+    Password
+    </legend>
+    <input type="password" name="password" maxlength="30" style="width:100%;"/>
+    <label id="passErr" style="text-color:red;">
+    </label>
+    <br/>
+    <br/>
+    <legend>
+    <input type="submit" value="Sign in" />
+    </legend>
+    </form>
+    <label id="flashError" style="color:red;text-align:center;">
     <%= flash 'error' %> 
     </label>
+    </fieldset>
+    <br/>
     </body>
 </html>
 
@@ -392,8 +519,7 @@ Message Text :
 <th>
 <td colspan="2" >
 <b style="text-align:left;align:left;">
-All users
-</b>
+Recipients: </b>
 </td>
 </th>
 <%= my $i; %>
@@ -412,7 +538,7 @@ All users
 </form>
 </body>
 </html>
-    
+
 @@ inbox/index.html.ep
 <!doctype html>
 <html>
@@ -420,21 +546,155 @@ All users
     <title>
     <%= session 'username' %>
     </title>
+    <script type="text/javascript" src="sentMessage.js" ></script>
     </head>
     <body>
     <%= include 'header/index' %>
+    % if( $number != 0 ) {
+    % foreach my $row(@{$inboxData}) { 
+    <table style="width:100%;" border="0" cellpadding="4" cellspacing="0">
+    <tr height="1">
+    <td bgcolor="#727272" colspan="3"></td>
+    </tr>
+    <tr bgcolor="#EEEEEE" style="height:0.5%">
+    <form method="get" name="replyForm<%= @{$row}[0] %>" id="replyForm<%= @{$row}[0] %>" onsubmit="validateForm(<%= @{$row}[0] %>);" action="<%= url_for('replyForm')->to_abs;%>" >
+    <td>
+    <strong>
+    Sender&nbsp;:&nbsp;
+    </strong>
+    <%= @{$row}[1] %>
+    </td>
+    <td>
+    <input type="hidden" name="hidden<%= @{$row}[0] %>" />
+    </td>
+    <td style="text-align:right;align:right;">
+    <input style="border:none;background:none;width:85px;" type="button" name="lnk<%= @{$row}[0] %>" value="[+]" onclick="toggle_visibility(<%= @{$row}[0] %>);" />
+    </td>
+    </tr>
+    </table>
+    <table name="tbl<%= @{$row}[0] %>" style="display:none;">
+    <tr>
+    <td style="align:left;text-align:left;">
+    <strong>Subject&nbsp;:</strong>&nbsp;<%= @{$row}[2] %>
+    </td>
+    </tr>
+    <tr>
+    <td style="align:left;text-align:left;">
+    <strong>Date&nbsp;:</strong>&nbsp;<%= @{$row}[3] %>
+    </td>
+    </tr>
+    <tr>
+    <td style="align:left;text-align:left;">
+    <strong>Time&nbsp;:</strong>&nbsp;<%= @{$row}[4] %>
+    </td>
+    </tr>
+    <tr>
+    <td style="align:left;text-align:left;">
+    <strong>Message&nbsp;:</strong>
+    </td>
+    </tr>
+    <tr>
+    <td>
+<pre>
+<%=@{$row}[6] %>
+</pre>
+    </td>
+    </tr>
+    <tr>
+    <td id="msgErr<%= @{$row}[0] %>" >
+    Message Text
+    </td>
+    </tr>
+    <tr>
+    <td name="replyField<%= @{$row}[0] %>" id="replyField<%= @{$row}[0] %>" >
+    <textarea rows="15" cols="80" name="textMessage<%= @{$row}[0] %>" ></textArea>
+    </td>
+    </tr>
+    <tr>
+    <td>
+    <input type="submit" value="Send Message"/>
+    </td>
+    </tr>
+    </form>
+    </table>
+    % } 
+% } else { 
+    No messages
+    % }
+</body>
+</html>
+    
+@@ sentMessages/index.html.ep
+<!doctype html>
+<html>
+    <head>
+    <script type="text/javascript" src="sentMessage.js" ></script> 
+    <title>
+    <%= session 'username' %>
+    </title>
+    </head>
+    <body>
+    <%= include 'header/index' %>
+    % if( $noOfSentMessages != 0 ) {
+    % foreach my $row(@{$sentData}) { 
+    <table style="width:100%;" border="0" cellpadding="4" cellspacing="0">
+    <tr height="1">
+    <td bgcolor="#727272" colspan="3"></td>
+    </tr>
+    <tr bgcolor="#EEEEEE" height="15">
+    <td><strong>To&nbsp;:&nbsp;</strong>
+    <%= @{$row}[1] %>
+    </td>
+    <td style="align:right;text-align:right">
+    <input style="border:none;background:none;width:85px;" name="lnk<%= @{$row}[0] %>" type="button" value="[+]" onclick="toggle_visibility(<%= @{$row}[0] %>);">
+    </td>
+    </tr>
+    <tr style="display:none" name="tbl<%= @{$row}[0] %>"> 
+    <td colspan="2" style="text-align:left;align:left;" >
+    <table>
+    <tr>
+    <td style="align:left;text-align:left"><strong>Subject &nbsp;:</strong> &nbsp;<%= @{$row}[2] %>
+    </tr>
+    <tr>
+    <td style="align:left;text-align:left"><strong>Date &nbsp;:</strong> &nbsp; <%= @{$row}[3] %>
+    </td>
+    </tr>
+    <tr>
+    <td style="align:left;text-align:left"><strong>Time &nbsp;:</strong> <%= @{$row}[4] %>
+    </td>
+    </tr>
+    <tr>
+    <td>
+    <strong>
+    Message :
+    </strong>
+    </td>
+    </tr>
+    <tr>
+    <td style="align:left;text-align:left;">
+    <pre style="font-size:120%;font-family:helvetica;">
+<%= @{$row}[5] %>
+</pre>
+    </td>
+    </tr>
+    </table>
+    </td>
+    </tr>
+    </table>
+    % } 
+    % } else { 
+    No messages 
+    % }
     </body>
 </html>
-
+    
 @@ header/index.html.ep
     <nav style="float:right;" >    
-    <%= link_to "Inbox" => 'inbox' %>
+    <%= link_to "Inbox" => 'inbox' %> 
     &nbsp; | &nbsp;
     <%= link_to "Send Messages" => 'sendMessages' %>
     &nbsp; | &nbsp;
     <%= link_to "Sent Messages" => 'sentMessages' %>
-    &nbsp; | &nbsp;
-    <%= link_to "Account Settings" => 'sendMessages' %>
     &nbsp; | &nbsp;
     <%= link_to Logout => 'logout' %>
     </nav>
@@ -445,7 +705,6 @@ All users
 
 function validateForm()
 {
-  alert("validateForm.");
   var username = document.forms["login"]["username"].value;
   var password = document.forms["login"]["password"].value;
   var blank = true;
@@ -456,8 +715,7 @@ function validateForm()
   
   if( username == null || username == "")
   {
-      alert("username = " + username);
-      userErr.innerHTML = "Please enter the username";
+      userErr.innerHTML = "<p style='color:red'>Please enter the username</p>";
       blank = false;
   }
   else
@@ -467,8 +725,7 @@ function validateForm()
 
   if( password == null || password == "")
   {
-      alert("password = " + password);
-      passErr.innerHTML = "Please enter the password";
+      passErr.innerHTML = "<p style='color:red'>Please enter the password</p>";
       blank = false;
   }
   else
@@ -481,7 +738,6 @@ function validateForm()
 
 function validateSendMsg(id)
 {
-    alert("validateSendMsg");
     var form = document.forms["sendMessage"];
     var message = document.forms["sendMessage"]["message"].value;
     var all = document.forms["sendMessage"].elements;
@@ -489,9 +745,7 @@ function validateSendMsg(id)
     var selected = false;
     var msgErr = document.getElementById('msgErr');
 
-    alert(form.elements["selected0"].checked);
-
-    for( var i = 0; i < size; i++ )
+    for( var i = 1; i <= size; i++ )
     {
 	if( i != id )
 	{
@@ -502,7 +756,6 @@ function validateSendMsg(id)
 		{
 		    if( checkbox.checked == true )
 		    {
-			alert(checkbox.value);
 			selected = true;
 			break;
 		    }
@@ -517,7 +770,7 @@ function validateSendMsg(id)
 
     if( !selected )
     {
-	msgErr.innerHTML = "Message Text :<br/>No recepients selected";
+	msgErr.innerHTML = "Message Text :<p style='color:red'>No recepients selected</p>";
 	return false;
     }
     else
@@ -525,11 +778,11 @@ function validateSendMsg(id)
 	msgErr.innerHTML = "Message Text :";
     }
 
-    var re = "/\s+/gm";
-    var newstr = message.replace(re, "");
+    var newstr = message.replace(/(\r\n|\n|\r)/gm,"");
+    newstr = newstr.replace(/^\s+$/,"");
     if( newstr == "" || newstr == null )
     {
-	msgErr.innerHTML = "Message Text :<br/>Please enter text for your message";
+	msgErr.innerHTML = "Message Text :<p style='color:red'>Please enter text for your message</p>";
 	return false;
     }
     else
@@ -552,5 +805,52 @@ function sh(form)
 	    break;
 	}
     }
-    alert(form.sizes[i].value);
 } 
+
+@@ sentMessage.js
+
+function toggle_visibility(id)
+{
+    var array1 = document.getElementsByName("tbl" + id);
+    var array2 = document.getElementsByName("lnk" + id);
+    array1[0].style.display = array1[0].style.display == "block" ? "none" : "block";
+    array2[0].value = array2[0].value == "[-]" ? "[+]" : "[-]";
+}
+
+textAreaCreated = false;
+function createATextArea(id)
+{
+    if( textAreaCreated == false )
+    {
+	var ta = document.getElementById('textMessage' + id);
+	ta.style.display = block;
+	var replyLink = document.getElementsByName("replyLink" + id);
+	var replyButton = document.getElementsByName("submitButton" + id);
+	replyLink[0].style.display = "none";
+	replyButton[0].style.display = "block";
+	var msgErr = document.getElementById("msgErr" + id);
+	msgErr.style.display = "block";
+	textAreaCreated="true";
+    }
+}
+
+function validateForm(id)
+{
+    var message = document.forms["replyForm" + id]["textMessage" + id].value;
+    var msgErr = document.getElementById('msgErr' + id);
+    var newstr = message.replace(/(\r\n|\n|\r)/gm,"");
+    newstr = newstr.replace(/^\s+$/,"");
+    if( newstr == "" || newstr == null )
+    {
+	var label = document.createElement("label");
+	label.setAttribute("style","color:red");
+	label.appendChild(document.createTextNode("Please enter text for your message"));
+	msgErr.appendChild(label);
+	return false;
+    }
+    else
+    {
+	msgErr.innerHTML = "Message Text :";
+	return true;
+    }
+}
