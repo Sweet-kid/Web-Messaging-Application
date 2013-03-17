@@ -458,7 +458,7 @@ __DATA__
     <br/>
     <br/>
     <br/>
-    <fieldset style="width:20%;floar:right;">
+    <fieldset style="width:20%;float:right;">
     <legend><strong>Sign In</strong></legend>
     <form name="login" method="post" onsubmit="return validateForm()" action="<%=url_for('login')->to_abs%>">
     <legend>
